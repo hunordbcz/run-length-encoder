@@ -19,6 +19,7 @@ typedef struct arguments {
 	char* input = nullptr;
 	char* output = nullptr;
 	boolean error = false;
+	boolean multiLevel = false;
 	char* errorCause = nullptr;
 } Arguments, * pArguments;
 
@@ -28,7 +29,11 @@ Arguments parseArguments(int argc, char** argv);
 
 void writeValues(std::ofstream* out, uchar* color, uchar* occurrence);
 
-void compressImage(char* input, char* output);
+void computePDF(Mat img, float pdf[256]);
+
+Mat multiLevelThresholding(Mat src);
+
+void compressImage(char* input, char* output, boolean multiLevel);
 
 void decompressImage(char* input, char* output);
 
@@ -44,7 +49,7 @@ int main(int argc, char** argv)
 	switch (arguments.operation)
 	{
 	case COMPRESS:
-		compressImage(arguments.input, arguments.output);
+		compressImage(arguments.input, arguments.output, arguments.multiLevel);
 		break;
 	case DECOMPRESS:
 		decompressImage(arguments.input, arguments.output);
@@ -64,6 +69,9 @@ void logArguments(Arguments args) {
 	}
 	if (args.operation == DECOMPRESS) {
 		std::cout << "DECOMPRESS\n";
+	}
+	if (args.multiLevel) {
+		std::cout << "Multi Level Threshold true\n";
 	}
 
 	std::cout << "Input: " << args.input << "\n";
@@ -89,6 +97,10 @@ Arguments parseArguments(int argc, char** argv) {
         else if (!strcmp(argv[i], "--output")) {
 			data.output = argv[++i];
         }
+
+		else if (!strcmp(argv[i], "--multiLevel")) {
+			data.multiLevel = true;
+		}
     }
 
 	if (data.operation == 0) {
@@ -118,7 +130,89 @@ void writeValues(std::ofstream *out, uchar* color, uchar* occurrence) {
 	*occurrence = 0;
 }
 
-void compressImage(char* input, char* output)
+void computePDF(Mat img, float pdf[256]) {
+	int M = img.rows * img.cols;
+	for (int i = 0; i < 256; i++) {
+		pdf[i] = 0.0f;
+	}
+
+	for (int i = 0; i < img.rows; i++)
+	{
+		for (int j = 0; j < img.cols; j++)
+		{
+			pdf[img.at<uchar>(i, j)]++;
+		}
+	}
+
+	for (int i = 0; i < 256; i++) {
+		pdf[i] = (float)(pdf[i] / M);
+	}
+}
+
+Mat multiLevelThresholding(Mat src) {
+
+	int windowWidth = 5;
+	float threshold = 0.0003;
+
+	Mat dst = Mat(src.rows, src.cols, CV_8UC1);
+	int max[256];
+	max[0] = 0;
+	int nrMax = 1;
+
+	float avgV;
+
+	float pdf[256];
+	computePDF(src, pdf);
+	for (int k = windowWidth; k < 255 - windowWidth; k++)
+	{
+		avgV = 0.0f;
+		for (int i = k - windowWidth; i <= k + windowWidth; i++) {
+			avgV += pdf[i];
+		}
+		avgV /= 2 * windowWidth + 1;
+
+		if (pdf[k] <= (avgV + threshold)) {
+			continue;
+		}
+
+		float localMax = 0.0f;
+		for (int x = k - windowWidth; x <= k + windowWidth; x++) {
+			if (localMax < pdf[x]) {
+				localMax = pdf[x];
+			}
+		}
+
+		if (pdf[k] != localMax) {
+			continue;
+		}
+
+		max[nrMax++] = k;
+	}
+	max[nrMax++] = 255;
+
+	float min = 256;
+	int value, tempVal;
+	int minPosition;
+	for (int i = 0; i < src.rows; i++) {
+		for (int j = 0; j < src.cols; j++) {
+			value = src.at<uchar>(i, j);
+			min = 256;
+			for (int k = 0; k < nrMax; k++) {
+				tempVal = abs(value - max[k]);
+				if (min > tempVal) {
+					min = tempVal;
+					minPosition = k;
+				}
+			}
+
+			dst.at<uchar>(i, j) = max[minPosition];
+		}
+	}
+
+	return dst;
+}
+
+void compressImage(char* input, char* output, boolean multiLevel)
 {
 	Mat src = imread(input, IMREAD_GRAYSCALE);
 	if (src.rows > 65536 || src.cols > 65536) {
@@ -133,6 +227,10 @@ void compressImage(char* input, char* output)
 
 	out.write((char*)&src.rows, 2);
 	out.write((char*)&src.cols, 2);
+
+	if (multiLevel) {
+		src = multiLevelThresholding(src);
+	}
 
 	uchar currentColor = -1, currentPixel;
 	uchar currentOccurrence = 0;
